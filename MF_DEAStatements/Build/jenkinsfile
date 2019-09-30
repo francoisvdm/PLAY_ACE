@@ -1,0 +1,69 @@
+pipeline {
+    agent any
+    stages
+     {
+        stage('pull from git')
+        {
+        	steps {
+            	checkout([
+                       $class: 'GitSCM',
+                       branches: [[name: '*/master']],
+                       extensions: scm.extensions + [[$class: 'LocalBranch'], [$class: 'WipeWorkspace']],
+                       userRemoteConfigs: [[credentialsId: 'githubcredid', url: 'https://github.com/APILabs/SBSAGarage.git']],
+                      
+               		])
+               	}
+        }
+        stage('Build Ant')
+        {
+        	steps {
+            	withAnt(installation: 'antlocal') 
+				{
+					sh "ant -buildfile ./MF_DEAStatements/Build/build.xml"
+				}
+           	 }
+				
+        }
+        stage('Set Docker Env') 
+        {
+                steps {
+                    echo 'Starting to build docker image'
+                    script {
+                        def dockerfile = 'dockerfile.ace_dea'
+                        def customImage = docker.build("ace_dea:${env.BUILD_ID}", "-f ./MF_DEAStatements/Build/${dockerfile} ./MF_DEAStatements")           
+                        }
+                    }
+        }
+	stage('Push image to OC') 
+        {
+                steps {
+                    echo 'Tag the image and push to OC'
+
+                        // login to docker registry on openshift cluster
+			//sh export user = ${oc whoami}
+			//sh export pwd =  ${oc whoami -t}
+		  sh """
+		  	oc login  https://192.168.64.3:8443 --insecure-skip-tls-verify -u system -p adasdasd
+			docker login -u system -p acjgEi4OF86gFitlI-rMGf6OAVkaDuWOB1lXnah4TyQ docker-registry-default.192.168.64.3.nip.io
+                        docker tag ace_dea:${env.BUILD_ID} docker-registry-default.192.168.64.3.nip.io/test/ace_dea:${env.BUILD_ID}
+                        docker push docker-registry-default.192.168.64.3.nip.io/test/ace_dea:${env.BUILD_ID}
+                    """
+                    }
+        }
+	stage('Run App') 
+    	{
+	    steps {
+		sh """
+		    oc project test
+		    oc new-app ace_dea:$BUILD_ID -e LICENSE=accept -e ACE_SERVER_NAME=ACESERVER
+		    oc expose service acedea --name=acedea-webui --port=7600 --generator="route/v1"
+		    oc expose service acedea --name=acedea-http --port=7800 --generator="route/v1"
+		    echo '************** hostname to access the webui*************' 
+		    oc get route acedea-http -o=go-template='{{ .spec.host}}'
+		    echo '************** hostname to access the webui*************' 
+		    oc get route acedea-webui -o=go-template='{{ .spec.host}}'
+         	"""
+	    }
+    	}
+    }
+}
